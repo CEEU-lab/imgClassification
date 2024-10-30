@@ -12,8 +12,7 @@ import os
 import shutil
 import numpy as np
 from pathlib import Path
-
-# mail Santiago: nunez.rimedio@gmail.com    
+    
 # https://poloclub.github.io/cnn-explainer/
 
 
