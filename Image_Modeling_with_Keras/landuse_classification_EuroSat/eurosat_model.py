@@ -240,46 +240,92 @@ def build_cnn_model(input_shape, num_classes):
     return model
 
 
-# Function to build the CNN model with regularization
+# Function to build the CNN model with enhanced regularization and dropout
 def build_cnn_model_with_regularization(input_shape, num_classes):
     model = models.Sequential()
     model.add(layers.Input(shape=input_shape))
-    model.add(layers.Conv2D(32, (3, 3), activation='relu', kernel_regularizer=regularizers.l2(0.0001)))
+    
+    # Primera capa convolucional sin regularización (menos profunda)
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
+    model.add(layers.BatchNormalization())
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Dropout(0.1))  # Menor dropout en capas convolucionales
+
+    # Segunda capa convolucional sin regularización (menos profunda)
+    model.add(layers.Conv2D(64, (3, 3), activation='relu'))
+    model.add(layers.BatchNormalization())
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Dropout(0.1))
+
+    # Tercera capa convolucional con regularización ligera (0.01)
+    model.add(layers.Conv2D(128, (3, 3), activation='relu', kernel_regularizer=regularizers.l2(0.01)))
     model.add(layers.BatchNormalization())
     model.add(layers.MaxPooling2D((2, 2)))
     model.add(layers.Dropout(0.2))
 
-    model.add(layers.Conv2D(64, (3, 3), activation='relu', kernel_regularizer=regularizers.l2(0.0001)))
+    # Cuarta capa convolucional (más profunda) con regularización más fuerte (0.1)
+    model.add(layers.Conv2D(256, (3, 3), activation='relu', kernel_regularizer=regularizers.l2(0.1)))
     model.add(layers.BatchNormalization())
     model.add(layers.MaxPooling2D((2, 2)))
-    model.add(layers.Dropout(0.3))
-
-    model.add(layers.Conv2D(128, (3, 3), activation='relu', kernel_regularizer=regularizers.l2(0.0001)))
-    model.add(layers.BatchNormalization())
-    model.add(layers.MaxPooling2D((2, 2)))
-    model.add(layers.Dropout(0.3))
-
+    model.add(layers.Dropout(0.2))
+    
+    # Aplanar las capas para pasar a capas densas
     model.add(layers.Flatten())
-    model.add(layers.Dense(512, activation='relu', kernel_regularizer=regularizers.l2(0.0001)))
-    model.add(layers.BatchNormalization())
-    model.add(layers.Dropout(0.2))
 
+    # Capa densa con regularización fuerte y mayor dropout
+    model.add(layers.Dense(512, activation='relu', kernel_regularizer=regularizers.l2(0.1)))
+    model.add(layers.BatchNormalization())
+    model.add(layers.Dropout(0.5))  # Mayor dropout en la capa densa
+
+    # Capa de salida para la clasificación
     model.add(layers.Dense(num_classes, activation='softmax'))
 
-    # Define the learning rate schedule
+    # Definir el plan de tasa de aprendizaje
     lr_schedule = ExponentialDecay(
         initial_learning_rate=1e-3,
         decay_steps=10000,
         decay_rate=0.9
     )
 
-    # Instantiate the optimizer with the learning rate schedule
+    # Instanciar el optimizador con el plan de tasa de aprendizaje
     optimizer = Adam(learning_rate=lr_schedule)
 
     model.compile(optimizer=optimizer,
                   loss='categorical_crossentropy',
                   metrics=['accuracy'])
     return model
+
+
+def visualize_weights(model, layer_index):
+    layer = model.layers[layer_index]
+    
+    # Verificar si la capa es convolucional
+    if 'conv' not in layer.name:
+        print(f"La capa en el índice {layer_index} no es una capa convolucional.")
+        return
+
+    # Obtener los pesos de la capa especificada
+    weights = layer.get_weights()[0]  # Tomar solo los pesos, sin los sesgos
+    
+    # Normalizar los pesos entre 0 y 1 para visualización
+    min_w = np.min(weights)
+    max_w = np.max(weights)
+    weights = (weights - min_w) / (max_w - min_w)
+
+    # Determinar el número de filtros en la capa
+    num_filters = weights.shape[-1]
+    num_channels = weights.shape[-2]  # Número de canales de entrada
+
+    fig, axes = plt.subplots(num_channels, num_filters, figsize=(20, 20))
+
+    # Visualizar cada filtro
+    for i in range(num_filters):
+        for j in range(num_channels):
+            ax = axes[j, i] if num_channels > 1 else axes[i]
+            ax.imshow(weights[:, :, j, i], cmap='viridis')
+            ax.axis('off')
+    plt.show()
+
 
 
 from tensorflow.keras import models, layers, regularizers
