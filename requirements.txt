@@ -3,3 +3,4 @@ matplotlib
 keras
 tensorflow
 pandas
+rasterio

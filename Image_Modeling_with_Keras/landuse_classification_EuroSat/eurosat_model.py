@@ -3,8 +3,11 @@ from tensorflow.keras import layers, models, regularizers
 from keras_tuner import HyperParameters
 from tensorflow.keras.callbacks import EarlyStopping
 
-from tensorflow.keras.optimizers import Adam, RMSprop, SGD, AdamW, Nadam
-from tensorflow.keras.optimizers.schedules import ExponentialDecay, CosineDecay
+from tensorflow.keras.optimizers import Adam, RMSprop, SGD
+from tensorflow.keras.optimizers.schedules import ExponentialDecay
+
+import tensorflow as tf
+import rasterio
 
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
@@ -204,6 +207,135 @@ def create_extended_generators(data_dir, img_size=(64, 64), batch_size=32, valid
 
     return train_generator, val_split_generator, test_generator
 
+
+def adjust_brightness_contrast(image, label):
+    # Ajusta brillo y contraste de la imagen
+    image = tf.image.random_brightness(image, max_delta=0.2)  # Variación de brillo hasta ±20%
+    image = tf.image.random_contrast(image, lower=0.8, upper=1.2)  # Variación de contraste entre 0.8 y 1.2
+    return image, label
+
+def create_extended_generators_with_brightness_contrast(data_dir, img_size=(64, 64), batch_size=32, validation_split=0.2, test_split=0.1):
+    """
+    Creates training, validation, and test data generators with brightness and contrast adjustments for image datasets.
+    """
+    
+    temp_val_dir = './temp_val_test_split'
+    if not os.path.exists(temp_val_dir):
+        os.makedirs(temp_val_dir)
+
+    # Crear un generador de datos con aumentación para el entrenamiento
+    train_datagen = ImageDataGenerator(
+        rescale=1./255,
+        rotation_range=15,            
+        width_shift_range=0.1,
+        height_shift_range=0.1,
+        shear_range=0.1,
+        zoom_range=0.1,
+        horizontal_flip=True,
+        fill_mode='nearest',
+        validation_split=validation_split  # División para entrenamiento y validación
+    )
+
+    # Generador para validación y prueba sin aumentación
+    test_datagen = ImageDataGenerator(
+        rescale=1./255,
+        validation_split=validation_split  
+    )
+
+    # Cargar conjunto de entrenamiento con aumentación
+    train_generator = train_datagen.flow_from_directory(
+        data_dir,
+        target_size=img_size,
+        batch_size=batch_size,
+        class_mode='categorical',
+        subset='training',  
+        shuffle=True,
+        seed=42
+    )
+
+    # Cargar conjunto de validación sin aumentación
+    val_generator = test_datagen.flow_from_directory(
+        data_dir,
+        target_size=img_size,
+        batch_size=batch_size,
+        class_mode='categorical',
+        subset='validation',  
+        shuffle=False,
+        seed=42
+    )
+
+    # Extraer rutas y etiquetas del conjunto de validación
+    val_filepaths = val_generator.filepaths
+    val_labels = val_generator.labels
+
+    # Dividir en validación y prueba
+    val_indices, test_indices = train_test_split(
+        np.arange(len(val_filepaths)),
+        test_size=test_split / (validation_split + test_split),
+        random_state=42
+    )
+
+    # Separar las imágenes de validación y prueba en carpetas temporales
+    for idx in val_indices:
+        src = val_filepaths[idx]
+        dst = os.path.join(temp_val_dir, 'validation', os.path.relpath(src, data_dir))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy(src, dst)
+
+    for idx in test_indices:
+        src = val_filepaths[idx]
+        dst = os.path.join(temp_val_dir, 'test', os.path.relpath(src, data_dir))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy(src, dst)
+
+    # Crear generadores para validación y prueba sin aumentación
+    val_split_generator = test_datagen.flow_from_directory(
+        os.path.join(temp_val_dir, 'validation'),
+        target_size=img_size,
+        batch_size=batch_size,
+        class_mode='categorical',
+        shuffle=False,
+        seed=42
+    )
+
+    test_generator = test_datagen.flow_from_directory(
+        os.path.join(temp_val_dir, 'test'),
+        target_size=img_size,
+        batch_size=batch_size,
+        class_mode='categorical',
+        shuffle=False,
+        seed=42
+    )
+
+    # Convertir a tf.data y aplicar aumentación de brillo y contraste
+    train_dataset = tf.data.Dataset.from_generator(
+        lambda: train_generator,
+        output_signature=(
+            tf.TensorSpec(shape=(None, *img_size, 3), dtype=tf.float32),
+            tf.TensorSpec(shape=(None, train_generator.num_classes), dtype=tf.float32)
+        )
+    ).map(adjust_brightness_contrast).prefetch(buffer_size=tf.data.AUTOTUNE)  # Añadir prefetch para mayor velocidad
+
+    # Aplicar cache para validación y prueba
+    val_dataset = tf.data.Dataset.from_generator(
+        lambda: val_split_generator,
+        output_signature=(
+            tf.TensorSpec(shape=(None, *img_size, 3), dtype=tf.float32),
+            tf.TensorSpec(shape=(None, val_split_generator.num_classes), dtype=tf.float32)
+        )
+    ).cache().prefetch(buffer_size=tf.data.AUTOTUNE)  # Añadir cache y prefetch para evitar recargas
+
+    test_dataset = tf.data.Dataset.from_generator(
+        lambda: test_generator,
+        output_signature=(
+            tf.TensorSpec(shape=(None, *img_size, 3), dtype=tf.float32),
+            tf.TensorSpec(shape=(None, test_generator.num_classes), dtype=tf.float32)
+        )
+    ).cache().prefetch(buffer_size=tf.data.AUTOTUNE)  # Añadir cache y prefetch para evitar recargas
+
+    return train_dataset, val_dataset, test_dataset
+
+
 # Build a simple CNN model
 def build_cnn_model(input_shape, num_classes):
     model = models.Sequential()
@@ -235,6 +367,44 @@ def build_cnn_model(input_shape, num_classes):
     # Compile the model
     model.compile(optimizer='adam',
                   loss='categorical_crossentropy',  # Use categorical crossentropy for multi-class classification
+                  metrics=['accuracy'])
+
+    return model
+
+# Build a rev CNN model
+def build_cnn_model_rev(input_shape, num_classes):
+    model = models.Sequential()
+
+    # Define input layer explicitly
+    model.add(layers.Input(shape=input_shape))
+
+    # 1st Conv Layer
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
+    model.add(layers.BatchNormalization())
+    model.add(layers.MaxPooling2D((2, 2)))
+
+    # 2nd Conv Layer
+    model.add(layers.Conv2D(64, (3, 3), activation='relu'))
+    model.add(layers.BatchNormalization())
+    model.add(layers.MaxPooling2D((2, 2)))
+
+    # 3rd Conv Layer
+    model.add(layers.Conv2D(128, (3, 3), activation='relu'))
+    model.add(layers.BatchNormalization())
+    model.add(layers.MaxPooling2D((2, 2)))
+
+    # GlobalAveragePooling instead of Flatten
+    model.add(layers.GlobalAveragePooling2D())
+
+    # Fully connected layer
+    model.add(layers.Dense(512, activation='relu'))
+
+    # Output layer: softmax for multi-class classification
+    model.add(layers.Dense(num_classes, activation='softmax'))
+
+    # Compile the model
+    model.compile(optimizer='adam',
+                  loss='categorical_crossentropy',
                   metrics=['accuracy'])
 
     return model
@@ -296,6 +466,19 @@ def build_cnn_model_with_regularization(input_shape, num_classes):
     return model
 
 
+def build_cnn_model_lite(input_shape, num_classes):
+    model = tf.keras.Sequential([
+        tf.keras.layers.Conv2D(16, (3, 3), activation='relu', input_shape=input_shape),
+        tf.keras.layers.MaxPooling2D((2, 2)),
+        tf.keras.layers.Conv2D(32, (3, 3), activation='relu'),
+        tf.keras.layers.MaxPooling2D((2, 2)),
+        tf.keras.layers.GlobalAveragePooling2D(),
+        tf.keras.layers.Dense(64, activation='relu'),  # Capa densa más pequeña
+        tf.keras.layers.Dense(num_classes, activation='softmax')
+    ])
+    return model
+
+
 def visualize_weights(model, layer_index):
     layer = model.layers[layer_index]
     
@@ -325,6 +508,188 @@ def visualize_weights(model, layer_index):
             ax.imshow(weights[:, :, j, i], cmap='viridis')
             ax.axis('off')
     plt.show()
+
+
+from tensorflow.keras import layers, models
+from tensorflow.keras.applications import ResNet50
+
+def create_adapted_resnet(num_classes, input_shape=(64, 64, 4)):
+    base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(64, 64, 3))
+
+    # Congelar capas base
+    for layer in base_model.layers:
+        layer.trainable = False
+
+    # Adaptar para 4 canales (RGB + MSAVI)
+    inputs = layers.Input(shape=input_shape)  # input_shape=(64, 64, 4)
+    x = layers.Conv2D(3, (1, 1))(inputs)      # Reducir de 4 a 3 canales
+    x = base_model(x)
+
+    # Añadir capas personalizadas
+    x = layers.GlobalAveragePooling2D()(x)
+    x = layers.Dense(256, activation='relu')(x)
+    x = layers.Dropout(0.5)(x)
+    outputs = layers.Dense(num_classes, activation='softmax')(x)
+
+    model = models.Model(inputs, outputs)
+    return model
+
+# Crear el modelo adaptado usando ResNet50 preentrenada
+def create_resnet_transfer_model(input_shape=(224, 224, 4), num_classes=10):
+    base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
+
+    # Congelar capas de la base preentrenada inicialmente
+    for layer in base_model.layers:
+        layer.trainable = False
+
+    # Adaptar para 4 canales (RGB + MSAVI)
+    inputs = layers.Input(shape=input_shape)
+    x = layers.Conv2D(3, (1, 1), activation='relu')(inputs)  # Reducir a 3 canales
+    x = base_model(x)
+
+    # Añadir capas personalizadas
+    x = layers.GlobalAveragePooling2D()(x)
+    x = layers.Dense(256, activation='relu')(x)
+    x = layers.Dropout(0.5)(x)
+    outputs = layers.Dense(num_classes, activation='softmax')(x)
+
+    model = models.Model(inputs, outputs)
+    return model
+
+# Fine-tuning gradual
+def unfreeze_and_finetune(model, layers_to_unfreeze=10, learning_rate=1e-5):
+    for layer in model.layers[-layers_to_unfreeze:]:
+        layer.trainable = True
+
+    # Compilar con un learning rate menor para fine-tuning
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate), loss='categorical_crossentropy', metrics=['accuracy'])
+
+
+from tensorflow.keras.callbacks import Callback
+
+class ManualLearningRateScheduler(Callback):
+    def __init__(self, schedule):
+        super(ManualLearningRateScheduler, self).__init__()
+        self.schedule = schedule
+
+    def on_epoch_begin(self, epoch, logs=None):
+        # Check if the current epoch is in the schedule
+        if epoch in self.schedule:
+            new_lr = self.schedule[epoch]
+            if isinstance(new_lr, (float, int)) and new_lr > 0:
+                # Determine the learning rate attribute, depending on TensorFlow version
+                if hasattr(self.model.optimizer, "learning_rate"):
+                    lr_attr = self.model.optimizer.learning_rate
+                elif hasattr(self.model.optimizer, "lr"):
+                    lr_attr = self.model.optimizer.lr
+                else:
+                    print(f"Warning: Unable to set learning rate for optimizer: no learning rate attribute found.")
+                    return
+
+                # Set the learning rate only if lr_attr is a valid variable
+                if isinstance(lr_attr, tf.Variable) or isinstance(lr_attr, tf.Tensor):
+                    tf.keras.backend.set_value(lr_attr, float(new_lr))
+                    print(f"\nEpoch {epoch+1}: Learning rate is set to {new_lr}")
+                else:
+                    print(f"Warning: Learning rate attribute {lr_attr} is not a valid Keras variable.")
+
+
+def preprocess_image(img, label):
+    # Redimensionar y normalizar en el rango [-1, 1] (por compatibilidad con ResNet50)
+    img = tf.image.resize(img, (224, 224))
+    img = tf.cast(img, tf.float32)
+    
+    # Normalizar valores de los pixeles al rango [-1, 1]
+    img = (img - tf.reduce_min(img)) / (tf.reduce_max(img) - tf.reduce_min(img)) * 2 - 1
+    
+    return img, label
+
+
+# Función para calcular MSAVI y combinarlo con RGB
+def prepare_rgb_msavi(image):
+    # Selecciona las bandas necesarias (ajusta los índices si es necesario)
+    red = image[..., 2]  # Banda Roja
+    nir = image[..., 7]  # Banda NIR (ajusta según tu archivo)
+
+    # Calcular MSAVI
+    msavi = (2 * nir + 1 - np.sqrt((2 * nir + 1) ** 2 - 8 * (nir - red))) / 2
+
+    # Normalizar RGB entre 0 y 1 (si aún no lo has hecho)
+    rgb = image[..., :3] / 255.0  # Escala RGB si es necesario
+
+    # Concatenar RGB + MSAVI para obtener un tensor (64, 64, 4)
+    rgb_msavi = np.concatenate([rgb, msavi[..., np.newaxis]], axis=-1)
+    return rgb_msavi
+
+
+from sklearn.metrics import confusion_matrix, classification_report, cohen_kappa_score
+import seaborn as sns
+
+# Función para evaluar el modelo
+def evaluate_model(model, X_test, y_test,classes):
+    # Predicciones
+    y_pred = model.predict(X_test)
+    y_pred_classes = np.argmax(y_pred, axis=1)
+    
+    # Convertir y_test de formato one-hot a etiquetas de clase única
+    y_test_classes = np.argmax(y_test, axis=1)
+
+    # Matriz de confusión
+    cm = confusion_matrix(y_test_classes, y_pred_classes)
+
+    # Coeficiente Kappa
+    kappa = cohen_kappa_score(y_test_classes, y_pred_classes)
+
+    # Reporte de clasificación
+    class_report = classification_report(y_test_classes, y_pred_classes, target_names=classes)
+
+    # Visualizar matriz de confusión
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
+    plt.title('Confusion Matrix')
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+    plt.show()
+
+    print(f"Kappa Score: {kappa}")
+    print("\nClassification Report:")
+    print(class_report)
+
+# Modified evaluation function to handle batches directly from the dataset
+def evaluate_model_in_batches(model, dataset, classes):
+    y_pred = []
+    y_true = []
+    
+    # Loop over batches in the dataset
+    for images, labels in dataset:
+        batch_preds = model.predict(images)  # Predict on batch
+        y_pred.extend(np.argmax(batch_preds, axis=1))  # Predicted classes
+        y_true.extend(np.argmax(labels.numpy(), axis=1))  # True classes (convert from one-hot if needed)
+    
+    # Convert lists to numpy arrays
+    y_pred = np.array(y_pred)
+    y_true = np.array(y_true)
+    
+    # Confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+    
+    # Cohen's Kappa Score
+    kappa = cohen_kappa_score(y_true, y_pred)
+    
+    # Classification report
+    class_report = classification_report(y_true, y_pred, target_names=classes)
+    
+    # Display confusion matrix
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
+    plt.title('Confusion Matrix')
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+    plt.show()
+    
+    print(f"Kappa Score: {kappa}")
+    print("\nClassification Report:")
+    print(class_report)
 
 
 
@@ -515,3 +880,56 @@ def visualize_augmented_images(X_train_sample, y_train_sample, index, datagen_au
         plt.axis('off')
     plt.suptitle(f"Manually Normalized Augmented Images (Original Class: {class_names[np.argmax(y_train_sample[index])]})")
     plt.show()
+
+
+    # Función para cargar y preprocesar imágenes satelitales
+def load_satellite_image(file_path):
+    with rasterio.open(file_path) as src:
+        image = src.read()
+        # Normalizar y reordenar dimensiones
+        image = np.transpose(image, (1, 2, 0))
+        image = image.astype(np.float32) / 255.0
+    return image
+
+# Cargar dataset (ejemplo con EuroSAT)
+def load_eurosat_dataset(root_dir, num_samples=1000):
+    classes = ['AnnualCrop', 'Forest', 'HerbaceousVegetation', 'Highway', 'Industrial',
+               'Pasture', 'PermanentCrop', 'Residential', 'River', 'SeaLake']
+
+    images = []
+    labels = []
+
+    for class_idx, class_name in enumerate(classes):
+        class_dir = os.path.join(root_dir, class_name)
+        files = os.listdir(class_dir)[:num_samples // len(classes)]
+
+        for file in files:
+            img_path = os.path.join(class_dir, file)
+            img = load_satellite_image(img_path)
+            images.append(img)
+            labels.append(class_idx)
+
+    return np.array(images), np.array(labels)
+
+
+# Modificar la función de carga para incluir MSAVI
+def load_eurosat_dataset_with_msavi(root_dir, num_samples=1000):
+    images = []
+    labels = []
+
+    # Lista de clases (necesaria para visualización)
+    classes = ['AnnualCrop', 'Forest', 'HerbaceousVegetation', 'Highway', 'Industrial',
+           'Pasture', 'PermanentCrop', 'Residential', 'River', 'SeaLake']
+    
+    for class_idx, class_name in enumerate(classes):
+        class_dir = os.path.join(root_dir, class_name)
+        files = os.listdir(class_dir)[:num_samples // len(classes)]
+
+        for file in files:
+            img_path = os.path.join(class_dir, file)
+            img = load_satellite_image(img_path)
+            img_with_msavi = prepare_rgb_msavi(img)  # Añadir MSAVI a RGB
+            images.append(img_with_msavi)
+            labels.append(class_idx)
+
+    return np.array(images), np.array(labels)
