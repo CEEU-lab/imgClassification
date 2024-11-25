@@ -4,3 +4,6 @@ keras
 tensorflow
 pandas
 rasterio
+scikit-image
+imantics
+opencv-python-headless
