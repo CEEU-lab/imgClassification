@@ -6,3 +6,5 @@ __pycache__/
 /Image_Modeling_with_Keras/landuse_classification_EuroSat/tuner_results
 /Image_Modeling_with_Keras/landuse_classification_EuroSat/temp_val_test_split
 /Image_Modeling_with_Keras/*.keras
+/Image_Modeling_with_Keras/building_SemSeg/data
+/Image_Modeling_with_Keras/building_SemSeg/*.keras
