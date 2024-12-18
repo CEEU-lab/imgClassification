@@ -1,0 +1,11 @@
+This repository holds some proof of concepts for solving classification problems 
+in urban aerial and panoramic images
+
+
+1. Image modeling with keras:
+
+* `land use`: multi class image classification with the EuroSAT dataset
+* `building footprints`: instance segmentation with Massachusetts dataset
+* `panoramic views`: multiclass instance segmentation with CamVid
+
+2. Image modeling with pytorch:

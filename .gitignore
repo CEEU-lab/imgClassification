@@ -8,3 +8,6 @@ __pycache__/
 /Image_Modeling_with_Keras/*.keras
 /Image_Modeling_with_Keras/building_SemSeg/data
 /Image_Modeling_with_Keras/building_SemSeg/*.keras
+/Image_Modeling_with_Keras/pano_SemSeg/data
+/Image_Modeling_with_Keras/pano_SemSeg/logs
+/Image_Modeling_with_Keras/pano_SemSeg/*.h5
