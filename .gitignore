@@ -11,3 +11,5 @@ __pycache__/
 /Image_Modeling_with_Keras/pano_SemSeg/data
 /Image_Modeling_with_Keras/pano_SemSeg/logs
 /Image_Modeling_with_Keras/pano_SemSeg/*.h5
+/Image_Modeling_with_Keras/water_bodies/data
+/Image_Modeling_with_PyTorch/water_bodies/*.pth

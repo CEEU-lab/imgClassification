@@ -11,3 +11,4 @@ opencv-python-headless
 albumentations>=0.3.0
 segmentation-models==1.0.1
 #efficientnet==1.1.1
+tqdm==4.67.1
